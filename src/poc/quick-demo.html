@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>POC 一键跑通 Demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; line-height: 1.5; }
+    input, button, textarea { font-size: 14px; }
+    button { margin-right: 8px; margin-top: 8px; }
+    pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow: auto; }
+    .section { margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h2>POC 快速跑通（集成层 + 记忆层 + 任务层）</h2>
+  <p>直接双击本文件在浏览器打开，默认访问 <code>http://localhost:8000</code>（确保 <code>uv run server.py</code> 已启动）。</p>
+
+  <div class="section">
+    <label>API 基础地址：</label>
+    <input id="baseUrl" value="http://localhost:8000" size="40" />
+    <button onclick="runAll()">一键执行全部步骤</button>
+  </div>
+
+  <div class="section">
+    <button onclick="createIntegrationTopic()">1) 创建集成层主题</button>
+    <button onclick="addIntegrationMembers()">2) 添加集成层成员</button>
+    <button onclick="addIntegrationContext()">3) 写入上下文片段</button>
+  </div>
+  <div class="section">
+    <button onclick="createMemoryTopic()">4) 创建记忆层主题</button>
+    <button onclick="ingestRaw()">5) 记忆层 LLM 抽取会议原文</button>
+    <button onclick="personalView()">6) 获取个人视图 (bob)</button>
+  </div>
+  <div class="section">
+    <button onclick="processTasks()">7) 任务层生成动作</button>
+  </div>
+
+  <h3>输出</h3>
+  <pre id="log"></pre>
+
+  <script>
+    let integrationTopicId = null;
+    let memoryTopicId = null;
+
+    const members = [
+      { user_id: "alice", display_name: "Alice", role: "pm", responsibilities: ["需求", "风险"] },
+      { user_id: "bob", display_name: "Bob", role: "fe", responsibilities: ["前端", "UI"] }
+    ];
+
+    const sampleDelta = {
+      meeting_id: "kickoff-001",
+      summary: "讨论了前端截止时间和新风险。",
+      facts: [{ text: "前端需要支持新接口", actors: ["bob"] }],
+      decisions: [{ text: "UI 走最小可用方案", actors: ["alice"] }],
+      risks: [{ text: "后端接口可能延迟", tags: ["backend"] }],
+      tasks: [
+        { title: "更新前端接口定义", owner: "bob", due: "2025-01-10", notes: "等待后端 schema" }
+      ],
+      notes: [{ text: "需要下周再同步一次" }]
+    };
+
+    const sampleTranscript = "Alice: 我们要改前端接口，最小可用方案先上线。Bob: 需要后端 schema，可能会晚几天。";
+
+    function log(line) {
+      const el = document.getElementById("log");
+      el.textContent += line + "\n";
+      el.scrollTop = el.scrollHeight;
+    }
+
+    async function api(path, options = {}) {
+      const base = document.getElementById("baseUrl").value.replace(/\/$/, "");
+      const resp = await fetch(base + path, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${txt}`);
+      }
+      if (resp.headers.get("content-type")?.includes("application/json")) {
+        return resp.json();
+      }
+      return resp.text();
+    }
+
+    async function createIntegrationTopic() {
+      log("创建集成层主题...");
+      const data = await api("/api/poc/integration/topics", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "AI 工作圈 POC (integration)",
+          description: "集成层示例",
+          goal: "持久化超级上下文并对外暴露 CRUD"
+        })
+      });
+      integrationTopicId = data.topic_id;
+      log(`集成层 topic_id = ${integrationTopicId}`);
+    }
+
+    async function addIntegrationMembers() {
+      if (!integrationTopicId) throw new Error("先创建集成层 topic");
+      for (const m of members) {
+        log(`添加成员到集成层: ${m.user_id}`);
+        await api(`/api/poc/integration/topics/${integrationTopicId}/members`, {
+          method: "POST",
+          body: JSON.stringify(m)
+        });
+      }
+      log("集成层成员添加完毕");
+    }
+
+    async function addIntegrationContext() {
+      if (!integrationTopicId) throw new Error("先创建集成层 topic");
+      log("写入集成层上下文片段...");
+      await api(`/api/poc/integration/topics/${integrationTopicId}/context`, {
+        method: "POST",
+        body: JSON.stringify({
+          author: "alice",
+          text: "后端接口可能延期，需要评估影响",
+          tags: ["risk", "backend"],
+          source: "slack-thread-123"
+        })
+      });
+      log("集成层上下文写入完成");
+    }
+
+    async function createMemoryTopic() {
+      log("创建记忆层主题...");
+      const data = await api("/api/poc/memory/topics", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "AI 工作圈 POC (memory)",
+          goal: "验证记忆层",
+          members: members
+        })
+      });
+      memoryTopicId = data.topic_id;
+      log(`记忆层 topic_id = ${memoryTopicId}`);
+    }
+
+    async function ingestRaw() {
+      if (!memoryTopicId) throw new Error("先创建记忆层 topic");
+      log("记忆层 ingest_raw (LLM 抽取会议原文)...");
+      await api(`/api/poc/memory/topics/${memoryTopicId}/ingest_raw`, {
+        method: "POST",
+        body: JSON.stringify({
+          meeting_id: "kickoff-001",
+          transcript: sampleTranscript
+        })
+      });
+      log("ingest_raw 完成");
+    }
+
+    async function personalView() {
+      if (!memoryTopicId) throw new Error("先创建记忆层 topic");
+      log("获取个人视图 (bob)...");
+      const data = await api(`/api/poc/memory/topics/${memoryTopicId}/view/bob`);
+      log("个人视图 (bob): " + JSON.stringify(data, null, 2));
+    }
+
+    async function processTasks() {
+      if (!memoryTopicId) throw new Error("先创建记忆层 topic");
+      log("任务层生成动作...");
+      const data = await api(`/api/poc/task/topics/${memoryTopicId}/process`, {
+        method: "POST",
+        body: JSON.stringify(sampleDelta)
+      });
+      log("任务层 actions: " + JSON.stringify(data.actions, null, 2));
+    }
+
+    async function runAll() {
+      document.getElementById("log").textContent = "";
+      try {
+        await createIntegrationTopic();
+        await addIntegrationMembers();
+        await addIntegrationContext();
+        await createMemoryTopic();
+        await ingestRaw();
+        await personalView();
+        await processTasks();
+        log("全部流程完成 ✅");
+      } catch (e) {
+        log("❌ 出错: " + e.message);
+      }
+    }
+  </script>
+</body>
+</html>

@@ -141,6 +141,10 @@ uv run server.py  # FastAPI 默认 http://localhost:8000
 - 将记忆层的 `MemoryStore` 换成基于 Mongo 的实现，复用集成层的数据。
 - 把任务层 `actions` 接到实际渠道（Slack/Zoom/Webhook/Jira 等）。
 - 加入简单的更新/删除接口，或编写 MCP tool 直接封装 `IntegrationService`/`MemoryService`/`TaskOrchestrator`。 
+
+## 一键演示（可视化）
+- 文件：`src/poc/quick-demo.html`
+- 用法：直接双击浏览器打开，保持后端 `uv run server.py` 运行，点击“一键执行全部步骤”即可依次调用集成层、记忆层（含 LLM 抽取）、任务层并在页面显示返回结果。
    或直接喂会议原文（由 LLM 抽取 delta）：  
    `POST /api/poc/memory/topics/{topic_id}/ingest_raw`
    ```json
