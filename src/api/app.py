@@ -16,6 +16,9 @@ from typing import AsyncGenerator, Dict, List, Any
 from src.graph import build_graph
 from src.config import TEAM_MEMBERS
 from src.service.workflow_service import run_agent_workflow
+from src.poc.memory.api import router as memory_router
+from src.poc.task.api import router as task_router
+from src.poc.integration.api import router as integration_router
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -38,6 +41,11 @@ app.add_middleware(
 
 # Create the graph
 graph = build_graph()
+
+# Register POC routers
+app.include_router(memory_router)
+app.include_router(task_router)
+app.include_router(integration_router)
 
 
 class ContentItem(BaseModel):
