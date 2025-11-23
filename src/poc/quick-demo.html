@@ -17,22 +17,59 @@
 
   <div class="section">
     <label>API 基础地址：</label>
-    <input id="baseUrl" value="http://localhost:8000" size="40" />
+    <input id="baseUrl" value="http://localhost:8000" size="36" />
+    <label style="margin-left:12px;">当前用户：</label>
+    <input id="currentUser" value="marquez.yang@zoom.us" size="28" />
+    <button onclick="resetAll()">清空所有数据</button>
     <button onclick="runAll()">一键执行全部步骤</button>
   </div>
 
-  <div class="section">
-    <button onclick="createIntegrationTopic()">1) 创建集成层主题</button>
-    <button onclick="addIntegrationMembers()">2) 添加集成层成员</button>
-    <button onclick="addIntegrationContext()">3) 写入上下文片段</button>
+  <div class="section" style="border-top:1px solid #ddd; padding-top:10px;">
+    <h3>1) 创建主题（集成层 + 记忆层）</h3>
+    <div>
+      <label>主题标题：</label>
+      <input id="topicTitle" value="AI 工作圈 POC" size="40" />
+      <button onclick="createCombinedTopic()">POST 创建</button>
+      <button onclick="getIntegrationTopics()">GET 查看集成层主题</button>
+    </div>
   </div>
-  <div class="section">
-    <button onclick="createMemoryTopic()">4) 创建记忆层主题</button>
-    <button onclick="ingestRaw()">5) 记忆层 LLM 抽取会议原文</button>
-    <button onclick="personalView()">6) 获取个人视图 (bob)</button>
+
+  <div class="section" style="border-top:1px solid #ddd; padding-top:10px;">
+    <h3>2) 成员管理（集成层）</h3>
+    <div>
+      <button onclick="addIntegrationMembers()">POST 从 assets/members.md 导入</button>
+      <button onclick="getMembers()">GET 查看成员</button>
+    </div>
   </div>
-  <div class="section">
-    <button onclick="processTasks()">7) 任务层生成动作</button>
+
+  <div class="section" style="border-top:1px solid #ddd; padding-top:10px;">
+    <h3>3) 写入上下文（按日期导入 assets，自动触发记忆层 ingest_raw）</h3>
+    <div>
+      <label>日期（YYYY-MM-DD）：</label>
+      <input id="contextDate" value="2025-01-07" size="12" />
+      <button onclick="importContextByDate()">POST 导入上下文</button>
+      <button onclick="getContext()">GET 查看上下文</button>
+    </div>
+    <div style="margin-top:6px;">
+      <label>手动 transcript：</label>
+      <textarea id="manualTranscript" rows="2" cols="80" placeholder="手动触发 ingest_raw 时使用"></textarea>
+      <button onclick="ingestRaw()">手动 ingest_raw</button>
+    </div>
+    <div style="margin-top:6px;">
+      <button onclick="personalView()">GET 记忆层个人视图（当前用户）</button>
+    </div>
+  </div>
+
+  <div class="section" style="border-top:1px solid #ddd; padding-top:10px;">
+    <h3>4) 任务层</h3>
+    <div>
+      <button onclick="processTasks()">POST 任务层生成动作（示例 delta）</button>
+    </div>
+    <div style="margin-top:6px;">
+      <label>按日期生成动作（只看当天资产，对当前用户）：</label>
+      <input id="taskDate" value="2025-01-08" size="12" />
+      <button onclick="processTasksByDate()">GET 生成</button>
+    </div>
   </div>
 
   <h3>输出</h3>
@@ -42,24 +79,17 @@
     let integrationTopicId = null;
     let memoryTopicId = null;
 
-    const members = [
-      { user_id: "alice", display_name: "Alice", role: "pm", responsibilities: ["需求", "风险"] },
-      { user_id: "bob", display_name: "Bob", role: "fe", responsibilities: ["前端", "UI"] }
-    ];
-
     const sampleDelta = {
       meeting_id: "kickoff-001",
       summary: "讨论了前端截止时间和新风险。",
-      facts: [{ text: "前端需要支持新接口", actors: ["bob"] }],
-      decisions: [{ text: "UI 走最小可用方案", actors: ["alice"] }],
+      facts: [{ text: "前端需要支持新接口", actors: ["marquez.yang@zoom.us"] }],
+      decisions: [{ text: "UI 走最小可用方案", actors: ["max.lin@zoom.us"] }],
       risks: [{ text: "后端接口可能延迟", tags: ["backend"] }],
       tasks: [
-        { title: "更新前端接口定义", owner: "bob", due: "2025-01-10", notes: "等待后端 schema" }
+        { title: "更新前端接口定义", owner: "max.lin@zoom.us", due: "2025-01-10", notes: "等待后端 schema" }
       ],
       notes: [{ text: "需要下周再同步一次" }]
     };
-
-    const sampleTranscript = "Alice: 我们要改前端接口，最小可用方案先上线。Bob: 需要后端 schema，可能会晚几天。";
 
     function log(line) {
       const el = document.getElementById("log");
@@ -83,84 +113,120 @@
       return resp.text();
     }
 
-    async function createIntegrationTopic() {
+    async function resetAll() {
+      log("重置集成层与记忆层...");
+      await api("/api/poc/integration/reset", { method: "POST" });
+      await api("/api/poc/memory/reset", { method: "POST" });
+      integrationTopicId = null;
+      memoryTopicId = null;
+      log("重置完成");
+    }
+
+    async function createCombinedTopic() {
+      const title = document.getElementById("topicTitle").value || "AI 工作圈 POC";
+      log("读取成员文件以便记忆层初始化...");
+      const memberEmails = (await api("/api/poc/integration/members/from_file")).members;
+      const memberObjs = memberEmails.map(email => ({
+        user_id: email,
+        display_name: email.split("@")[0],
+        role: "member",
+        responsibilities: []
+      }));
+
       log("创建集成层主题...");
-      const data = await api("/api/poc/integration/topics", {
+      const integ = await api("/api/poc/integration/topics", {
         method: "POST",
-        body: JSON.stringify({
-          title: "AI 工作圈 POC (integration)",
-          description: "集成层示例",
-          goal: "持久化超级上下文并对外暴露 CRUD"
-        })
+        body: JSON.stringify({ title, description: title, goal: "POC" })
       });
-      integrationTopicId = data.topic_id;
+      integrationTopicId = integ.topic_id;
       log(`集成层 topic_id = ${integrationTopicId}`);
-    }
 
-    async function addIntegrationMembers() {
-      if (!integrationTopicId) throw new Error("先创建集成层 topic");
-      for (const m of members) {
-        log(`添加成员到集成层: ${m.user_id}`);
-        await api(`/api/poc/integration/topics/${integrationTopicId}/members`, {
-          method: "POST",
-          body: JSON.stringify(m)
-        });
-      }
-      log("集成层成员添加完毕");
-    }
-
-    async function addIntegrationContext() {
-      if (!integrationTopicId) throw new Error("先创建集成层 topic");
-      log("写入集成层上下文片段...");
-      await api(`/api/poc/integration/topics/${integrationTopicId}/context`, {
+      log("创建记忆层主题(同 id)...");
+      const mem = await api("/api/poc/memory/topics", {
         method: "POST",
-        body: JSON.stringify({
-          author: "alice",
-          text: "后端接口可能延期，需要评估影响",
-          tags: ["risk", "backend"],
-          source: "slack-thread-123"
-        })
+        body: JSON.stringify({ topic_id: integ.topic_id, title, goal: "POC", members: memberObjs })
       });
-      log("集成层上下文写入完成");
-    }
-
-    async function createMemoryTopic() {
-      log("创建记忆层主题...");
-      const data = await api("/api/poc/memory/topics", {
-        method: "POST",
-        body: JSON.stringify({
-          title: "AI 工作圈 POC (memory)",
-          goal: "验证记忆层",
-          members: members
-        })
-      });
-      memoryTopicId = data.topic_id;
+      memoryTopicId = mem.topic_id;
       log(`记忆层 topic_id = ${memoryTopicId}`);
     }
 
+    async function getIntegrationTopics() {
+      const data = await api("/api/poc/integration/topics");
+      log("集成层主题: " + JSON.stringify(data, null, 2));
+    }
+
+    async function addIntegrationMembers() {
+      if (!integrationTopicId) throw new Error("先创建主题");
+      log("读取 assets/members.md...");
+      const members = (await api("/api/poc/integration/members/from_file")).members;
+      for (const email of members) {
+        log(`添加成员: ${email}`);
+        await api(`/api/poc/integration/topics/${integrationTopicId}/members`, {
+          method: "POST",
+          body: JSON.stringify({ user_id: email, display_name: email.split("@")[0], role: "member", responsibilities: [] })
+        });
+      }
+      log("成员导入完成");
+    }
+
+    async function getMembers() {
+      if (!integrationTopicId) throw new Error("先创建主题");
+      const data = await api(`/api/poc/integration/topics/${integrationTopicId}/members`);
+      log("成员列表: " + JSON.stringify(data, null, 2));
+    }
+
+    async function importContextByDate() {
+      if (!integrationTopicId) throw new Error("先创建主题");
+      const date = document.getElementById("contextDate").value;
+      const author = document.getElementById("currentUser").value || "system";
+      log(`导入资产至 ${date} 并写入上下文...`);
+      const created = await api(`/api/poc/integration/topics/${integrationTopicId}/context/import_assets?date=${date}&author=${encodeURIComponent(author)}`, {
+        method: "POST"
+      });
+      log(`已写入 ${created.length} 条上下文`);
+      // 自动触发 ingest_raw：聚合资产文本作为 transcript
+      const assets = await api(`/api/poc/integration/assets?date=${date}`);
+      const transcript = assets.map(a => `[${a.name}] ${a.content}`).join("\n\n");
+      if (transcript && memoryTopicId) {
+        log("触发记忆层 ingest_raw（基于导入上下文）...");
+        await api(`/api/poc/memory/topics/${memoryTopicId}/ingest_raw`, {
+          method: "POST",
+          body: JSON.stringify({ meeting_id: `bulk-${date}`, transcript })
+        });
+      }
+    }
+
+    async function getContext() {
+      if (!integrationTopicId) throw new Error("先创建主题");
+      const data = await api(`/api/poc/integration/topics/${integrationTopicId}/context`);
+      log("上下文列表: " + JSON.stringify(data, null, 2));
+    }
+
     async function ingestRaw() {
-      if (!memoryTopicId) throw new Error("先创建记忆层 topic");
+      if (!memoryTopicId) throw new Error("先创建主题");
+      const transcript = document.getElementById("manualTranscript").value || "Alice: 我们要改前端接口，最小可用方案先上线。Bob: 需要后端 schema，可能会晚几天。";
       log("记忆层 ingest_raw (LLM 抽取会议原文)...");
       await api(`/api/poc/memory/topics/${memoryTopicId}/ingest_raw`, {
         method: "POST",
         body: JSON.stringify({
-          meeting_id: "kickoff-001",
-          transcript: sampleTranscript
+          meeting_id: "manual",
+          transcript
         })
       });
       log("ingest_raw 完成");
     }
 
     async function personalView() {
-      if (!memoryTopicId) throw new Error("先创建记忆层 topic");
-      log("获取个人视图 (bob)...");
-      const data = await api(`/api/poc/memory/topics/${memoryTopicId}/view/bob`);
-      log("个人视图 (bob): " + JSON.stringify(data, null, 2));
+      if (!memoryTopicId) throw new Error("先创建主题");
+      const user = document.getElementById("currentUser").value || "marquez.yang@zoom.us";
+      log(`获取个人视图 (${user})...`);
+      const data = await api(`/api/poc/memory/topics/${memoryTopicId}/view/${encodeURIComponent(user)}`);
+      log("个人视图: " + JSON.stringify(data, null, 2));
     }
 
     async function processTasks() {
-      if (!memoryTopicId) throw new Error("先创建记忆层 topic");
-      log("任务层生成动作...");
+      if (!memoryTopicId) throw new Error("先创建主题");
+      log("任务层生成动作 (示例 delta)...");
       const data = await api(`/api/poc/task/topics/${memoryTopicId}/process`, {
         method: "POST",
         body: JSON.stringify(sampleDelta)
@@ -168,14 +234,22 @@
       log("任务层 actions: " + JSON.stringify(data.actions, null, 2));
     }
 
+    async function processTasksByDate() {
+      if (!memoryTopicId) throw new Error("先创建主题");
+      const date = document.getElementById("taskDate").value;
+      const user = document.getElementById("currentUser").value || "marquez.yang@zoom.us";
+      log(`按日期生成动作 (${date}, user=${user})...`);
+      const data = await api(`/api/poc/task/topics/${memoryTopicId}/process_assets?date=${date}&user_id=${encodeURIComponent(user)}`);
+      log("任务层 actions (按日期): " + JSON.stringify(data.actions, null, 2));
+    }
+
     async function runAll() {
       document.getElementById("log").textContent = "";
       try {
-        await createIntegrationTopic();
+        await resetAll();
+        await createCombinedTopic();
         await addIntegrationMembers();
-        await addIntegrationContext();
-        await createMemoryTopic();
-        await ingestRaw();
+        await importContextByDate();
         await personalView();
         await processTasks();
         log("全部流程完成 ✅");

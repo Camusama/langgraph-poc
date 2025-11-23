@@ -28,3 +28,5 @@ class MemoryStore:
         self._topics[topic_id] = topic
         return topic
 
+    def clear(self) -> None:
+        self._topics = {}

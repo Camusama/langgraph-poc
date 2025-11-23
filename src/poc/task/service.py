@@ -9,6 +9,7 @@ from src.poc.memory.service import MemoryService
 from .models import NotificationAction, ProcessResult
 from src.agents.llm import get_llm_by_type
 import json
+from src.poc.assets_loader import load_assets_by_date
 
 
 class TaskOrchestrator:
@@ -155,3 +156,65 @@ class TaskOrchestrator:
             return actions
         except Exception:
             return []
+
+    def process_assets_for_user(
+        self, topic_id: str, date_str: str, user_id: str
+    ) -> ProcessResult:
+        """Load assets for a date, summarize meetings/chats, and produce user-focused actions."""
+        topic = self.memory_service.get_topic(topic_id)
+        assets = load_assets_by_date(date_str)
+        if not assets:
+            raise ValueError(f"No assets found for {date_str}")
+
+        assets_text = "\n\n".join(
+            [f"[{a['name']}] {a['content']}" for a in assets]
+        )
+        prompt = f"""
+你是项目 PM 助手。基于以下资产内容（同一天的会议/群聊摘要），针对用户 {user_id} 输出动作列表。
+目标：回答 “今日({date_str}) 开了哪些会/聊天，对 {user_id} 的任务和行动有什么影响？”
+输出 JSON：数组，每个元素 {{"action_type":"notify|ask|escalate","target_user":"...", "message":"...", "severity":"info|warning|critical", "tags":[]}}
+规则：
+- 只输出与 {user_id} 相关的动作或提问
+- 如需缺席确认，用 ask 且 message 前缀加 "[缺席确认]"
+- 如无相关事项，返回空数组
+
+主题信息：
+- title: {topic.title}
+- goal: {topic.goal}
+- members: {[m.user_id for m in topic.members]}
+- 最近摘要:
+{chr(10).join(topic.recent_notes[:5]) or '无'}
+
+今日资产：
+{assets_text}
+
+只返回 JSON 数组。
+"""
+        actions: List[NotificationAction] = []
+        try:
+            response = self.llm.invoke(prompt)
+            content = response.content if hasattr(response, "content") else str(response)
+            parsed = json.loads(content)
+            for item in parsed:
+                actions.append(
+                    NotificationAction(
+                        action_type=item.get("action_type", "notify"),
+                        target_user=item.get("target_user", user_id),
+                        message=item.get("message", ""),
+                        severity=item.get("severity", "info"),
+                        tags=item.get("tags", []),
+                    )
+                )
+        except Exception:
+            # fallback: simple notify with list of asset names
+            titles = ", ".join([a["name"] for a in assets])
+            actions.append(
+                NotificationAction(
+                    action_type="notify",
+                    target_user=user_id,
+                    message=f"今日({date_str}) 资产: {titles}。请查看是否有与你相关的事项。",
+                    severity="info",
+                    tags=["fallback"],
+                )
+            )
+        return ProcessResult(topic=topic, actions=actions)

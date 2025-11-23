@@ -86,3 +86,13 @@ class IntegrationStore:
         cursor = self.contexts.find({"topic_id": topic_id}).sort("created_at", -1).limit(limit)
         return [ContextEntry(**doc) for doc in cursor]
 
+    def reset(self) -> None:
+        self.topics.drop()
+        self.members.drop()
+        self.contexts.drop()
+        self.topics = self.client[self.topics.database.name]["topics"]
+        self.members = self.client[self.members.database.name]["members"]
+        self.contexts = self.client[self.contexts.database.name]["contexts"]
+        self.topics.create_index("topic_id", unique=True)
+        self.members.create_index([("topic_id", 1), ("user_id", 1)], unique=True)
+        self.contexts.create_index("topic_id")

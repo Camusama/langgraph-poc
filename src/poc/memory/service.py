@@ -77,6 +77,10 @@ class MemoryService:
             raise ValueError(f"Topic {topic_id} not found")
         return topic
 
+    def reset(self) -> None:
+        """Clear in-memory topics."""
+        self.store.clear()
+
     def list_topics(self) -> List[TopicState]:
         return self.store.list_topics()
 

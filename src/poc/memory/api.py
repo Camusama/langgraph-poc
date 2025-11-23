@@ -74,3 +74,9 @@ def personal_view(topic_id: str, user_id: str):
         return memory_service.build_personal_view(topic_id, user_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/reset")
+def reset_memory():
+    memory_service.reset()
+    return {"status": "ok"}

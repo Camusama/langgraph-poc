@@ -45,6 +45,11 @@ def list_members(topic_id: str) -> List[Member]:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/members/from_file")
+def members_from_file():
+    return {"members": service.load_members_from_file()}
+
+
 @router.post("/topics/{topic_id}/context", response_model=ContextEntry)
 def add_context(topic_id: str, payload: ContextCreate) -> ContextEntry:
     try:
@@ -63,3 +68,33 @@ def list_context(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
+
+@router.post("/reset")
+def reset_integration():
+    service.reset()
+    return {"status": "ok"}
+
+
+@router.get("/assets")
+def assets(date: str):
+    """Return asset files up to given date (YYYY-MM-DD) without persisting."""
+    try:
+        from src.poc.assets_loader import load_assets_upto
+
+        return load_assets_upto(date)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/topics/{topic_id}/context/import_assets", response_model=List[ContextEntry])
+def import_assets_context(
+    topic_id: str,
+    date: str,
+    author: str = "system",
+):
+    try:
+        return service.import_context_from_assets(topic_id, date_str=date, author=author)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
