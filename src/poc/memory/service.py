@@ -145,11 +145,16 @@ class MemoryService:
             f"- {m.user_id} ({m.role or 'member'}): {', '.join(m.responsibilities) if m.responsibilities else '无职责标签'}"
             for m in topic.members
         ]
+        member_ids = [m.user_id for m in topic.members]
         recent_notes = "\n".join(topic.recent_notes[:5])
         prompt = f"""
 将会议内容压缩为 JSON，字段：facts, decisions, risks, tasks, notes。
 - facts/decisions/risks/notes: 数组，元素 {{"text":"…","actors":["user_id"],"tags":["…"]}}
 - tasks: 数组，元素 {{"title":"…","owner":"user_id","due":"YYYY-MM-DD","notes":"…","tags":["…"],"related_actors":["user_id"]}}
+过滤要求：
+- 仅保留与这些成员相关的内容（actors/owner/related_actors/文本提到）：{member_ids or '无'}
+- 不相关的内容直接丢弃
+- 尽量精简，每个字段最多 5 条
 只输出 JSON，无解释，无代码块。内容要短。
 会议内容：
 {transcript}

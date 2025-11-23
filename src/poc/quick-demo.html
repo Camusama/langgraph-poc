@@ -73,13 +73,16 @@
   <div class="section" style="border-top:1px solid #ddd; padding-top:10px;">
     <h3>4) 任务层</h3>
     <div>
-      <button onclick="processTasks()">POST 任务层生成动作（示例 delta）</button>
+      <button onclick="processTasks()">POST 任务层生成动作（示例 delta，topic 视角）</button>
     </div>
     <div style="margin-top:6px;">
-      <label>按日期生成动作（只看当天资产，对当前用户）：</label>
+      <label>当前用户视角（基于现有记忆+上下文，不看日期）：</label>
+      <button onclick="processTasksForUser()">GET 生成</button>
+    </div>
+    <div style="margin-top:6px;">
+      <label>导入当天 assets 后立即生成（仍不等待记忆）：</label>
       <input id="taskDate" value="2025-01-08" size="12" />
-      <button onclick="processTasksByDate()">GET 生成</button>
-      <button onclick="importAndGenerate()">POST 导入并生成</button>
+      <button onclick="importAndGenerate()">POST 导入当天 assets 并生成</button>
     </div>
   </div>
 
@@ -367,9 +370,17 @@
       log("记忆层存储: " + JSON.stringify(data, null, 2));
     }
 
+    async function processTasksForUser() {
+      await ensureTopicsReady();
+      const user = document.getElementById("currentUser").value || "marquez.yang@zoom.us";
+      log(`当前用户视角动作（基于现有记忆+上下文） user=${user}...`);
+      const data = await api(`/api/poc/task/topics/${memoryTopicId}/process_user?user_id=${encodeURIComponent(user)}`);
+      log("任务层 actions (当前用户): " + JSON.stringify(data.actions, null, 2));
+    }
+
     async function processTasks() {
       await ensureTopicsReady();
-      log("任务层生成动作 (示例 delta)...");
+      log("任务层生成动作 (示例 delta，topic 视角)...");
       const data = await api(`/api/poc/task/topics/${memoryTopicId}/process`, {
         method: "POST",
         body: JSON.stringify(sampleDelta)
@@ -377,21 +388,12 @@
       log("任务层 actions: " + JSON.stringify(data.actions, null, 2));
     }
 
-    async function processTasksByDate() {
-      await ensureTopicsReady();
-      const date = document.getElementById("taskDate").value;
-      const user = document.getElementById("currentUser").value || "marquez.yang@zoom.us";
-      log(`按日期生成动作（同步 ingestion） (${date}, user=${user})...`);
-      const data = await api(`/api/poc/task/topics/${memoryTopicId}/process_assets?date=${date}&user_id=${encodeURIComponent(user)}`);
-      log("任务层 actions (按日期): " + JSON.stringify(data.actions, null, 2));
-    }
-
     async function importAndGenerate() {
       await ensureTopicsReady();
       const date = document.getElementById("taskDate").value;
       const author = document.getElementById("currentUser").value || "system";
       const user = author;
-      log(`导入当日资产并生成动作 (${date}, user=${user})...`);
+      log(`导入当日资产并生成动作（导入后立即生成，异步写记忆） (${date}, user=${user})...`);
       // 只导入当日资产到上下文
       await api(`/api/poc/integration/topics/${integrationTopicId}/context/import_assets?date=${date}&start_date=${date}&author=${encodeURIComponent(author)}`, {
         method: "POST"

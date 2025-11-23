@@ -28,3 +28,13 @@ def process_assets(topic_id: str, date: str, user_id: str) -> ProcessResult:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/topics/{topic_id}/process_user", response_model=ProcessResult)
+def process_user(topic_id: str, user_id: str) -> ProcessResult:
+    try:
+        return orchestrator.process_for_user(topic_id, user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

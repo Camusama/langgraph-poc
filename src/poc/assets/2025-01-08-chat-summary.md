@@ -7,5 +7,6 @@
 - Gamego 完成 quick-demo.html 的 meeting_id 显示；待合并。
 - 待办：
   - Marquez：验证 ingest_raw + task actions 是否能过滤出与自己相关的提醒（截止 1/09）。
+  - Marquez：整理一份“缺席提醒”文案并发给团队，截止 1/09 晚上。
   - Otis：把 “why” 字段加入任务层输出草稿（截止 1/09）。
   - Gamego：把前端改动提 PR（截止 1/09）。
