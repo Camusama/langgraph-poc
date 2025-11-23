@@ -69,6 +69,17 @@ def list_context(
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/topics/{topic_id}/context/recent", response_model=List[ContextEntry])
+def list_context_recent(
+    topic_id: str,
+    limit: int = Query(30, ge=1, le=200),
+) -> List[ContextEntry]:
+    try:
+        return service.list_context_recent(topic_id, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @router.post("/reset")
 def reset_integration():
     service.reset()

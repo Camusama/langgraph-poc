@@ -99,6 +99,14 @@ class IntegrationStore:
         ).sort("created_at", 1)
         return [ContextEntry(**doc) for doc in cursor]
 
+    def list_context_recent(self, topic_id: str, limit: int = 30) -> List[ContextEntry]:
+        cursor = (
+            self.contexts.find({"topic_id": topic_id})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
+        return [ContextEntry(**doc) for doc in cursor]
+
     def reset(self) -> None:
         self.topics.drop()
         self.members.drop()

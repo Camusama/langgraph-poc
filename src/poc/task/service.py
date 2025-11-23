@@ -10,20 +10,27 @@ from .models import NotificationAction, ProcessResult
 from src.agents.llm import get_llm_by_type
 import json
 from src.poc.assets_loader import load_assets_by_date
+from src.poc.integration.service import IntegrationService
 
 
 class TaskOrchestrator:
     """Very small rule-based orchestrator over meeting deltas."""
 
-    def __init__(self, memory_service: Optional[MemoryService] = None, llm=None) -> None:
+    def __init__(
+        self,
+        memory_service: Optional[MemoryService] = None,
+        llm=None,
+        integration_service: Optional[IntegrationService] = None,
+    ) -> None:
         self.memory_service = memory_service or MemoryService()
         self.llm = llm or get_llm_by_type("reasoning")
+        self.integration_service = integration_service or IntegrationService()
 
     def process_delta(self, topic_id: str, delta: MeetingDelta) -> ProcessResult:
         """Ingest meeting delta into memory and produce actions."""
         topic = self.memory_service.ingest_meeting_delta(topic_id, delta)
         actions: List[NotificationAction] = []
-        actions.extend(self._llm_actions(topic, delta))
+        actions.extend(self._llm_actions(topic_id, topic, delta))
         if not actions:
             actions.extend(self._task_actions(topic, delta))
             actions.extend(self._risk_actions(topic, delta))
@@ -109,23 +116,39 @@ class TaskOrchestrator:
         return users
 
     def _llm_actions(
-        self, topic: TopicState, delta: MeetingDelta
+        self, topic_id: str, topic: TopicState, delta: MeetingDelta, extra_context: str = ""
     ) -> List[NotificationAction]:
-        """Use LLM to reason actions; fall back to rule-based if parse fails."""
+        """Use LLM to reason actions; fall back to rule-based if parse fails.
+
+        Inputs:
+        - memory_slice: 持久的记忆（结构化、低噪）
+        - recent_context: 最近的上下文原文片段（高新鲜度）
+        """
         members_summary = [
             f"- {m.user_id} ({m.role or 'member'}): {', '.join(m.responsibilities) if m.responsibilities else '无职责标签'}"
             for m in topic.members
         ]
-        prompt = f"""
-你是项目经理助手，根据会议增量 + 主题上下文生成“动作列表”，用 JSON 数组返回，每个元素：
-{{"action_type": "notify"|"ask"|"escalate", "target_user": "<user_id 或 all>", "message": "...", "severity": "info|warning|critical", "tags": ["..."]}}
-规则：
-- 高风险/阻塞用 warning/critical
-- 不要编造未在上下文出现的用户
-- 如需澄清，action_type 用 ask，message 用问题句
-- 如果内容很普通，可返回空数组
+        memory_slice = self.memory_service.list_memory_entries(topic_id, limit=40)
+        memory_text = "\n".join(
+            [f"[{item.type}] {item.text}" for item in memory_slice]
+        )
+        recent_ctx_entries = []
+        try:
+            recent_ctx_entries = self.integration_service.list_context_recent(
+                topic_id, limit=20
+            )
+        except Exception:
+            recent_ctx_entries = []
+        recent_ctx_text = "\n".join(
+            [f"[{c.source or 'ctx'}] {c.text}" for c in recent_ctx_entries]
+        )
 
-主题信息：
+        prompt = f"""
+你是项目经理助手，基于“持久记忆 + 最近上下文”生成动作(JSON 数组)：
+每个元素 {{"action_type":"notify|ask|escalate","target_user":"<user_id或all>","message":"...","severity":"info|warning|critical","tags":[],"source":"memory|context"}}
+规则：优先用持久记忆判断影响，必要时用最近上下文细节；不编造用户；无关则返回空数组。
+
+主题：
 - title: {topic.title}
 - goal: {topic.goal or "未提供"}
 - members:
@@ -133,10 +156,18 @@ class TaskOrchestrator:
 - 最近摘要:
 {chr(10).join(topic.recent_notes[:5]) or '无'}
 
+持久记忆(裁剪):
+{memory_text or '无'}
+
+最近上下文(原文片段):
+{recent_ctx_text or '无'}
+额外上下文(当前批次):
+{extra_context or '无'}
+
 会议增量：
 {delta.model_dump()}
 
-只返回 JSON 数组，不要代码块。
+只返回 JSON 数组。
 """
         try:
             response = self.llm.invoke(prompt)
@@ -160,53 +191,30 @@ class TaskOrchestrator:
     def process_assets_for_user(
         self, topic_id: str, date_str: str, user_id: str
     ) -> ProcessResult:
-        """Load assets for a date, summarize meetings/chats, and produce user-focused actions."""
-        topic = self.memory_service.get_topic(topic_id)
+        """Load assets for a date and produce user-focused actions. Ingest and action generation are decoupled."""
         assets = load_assets_by_date(date_str)
         if not assets:
             raise ValueError(f"No assets found for {date_str}")
+        transcript = "\n\n".join([f"[{a['name']}] {a['content']}" for a in assets])
 
-        assets_text = "\n\n".join(
-            [f"[{a['name']}] {a['content']}" for a in assets]
-        )
-        prompt = f"""
-你是项目 PM 助手。基于以下资产内容（同一天的会议/群聊摘要），针对用户 {user_id} 输出动作列表。
-目标：回答 “今日({date_str}) 开了哪些会/聊天，对 {user_id} 的任务和行动有什么影响？”
-输出 JSON：数组，每个元素 {{"action_type":"notify|ask|escalate","target_user":"...", "message":"...", "severity":"info|warning|critical", "tags":[]}}
-规则：
-- 只输出与 {user_id} 相关的动作或提问
-- 如需缺席确认，用 ask 且 message 前缀加 "[缺席确认]"
-- 如无相关事项，返回空数组
-
-主题信息：
-- title: {topic.title}
-- goal: {topic.goal}
-- members: {[m.user_id for m in topic.members]}
-- 最近摘要:
-{chr(10).join(topic.recent_notes[:5]) or '无'}
-
-今日资产：
-{assets_text}
-
-只返回 JSON 数组。
-"""
-        actions: List[NotificationAction] = []
+        # 1) Try to get a structured delta (once). If fails, fallback to synthetic.
+        meeting_delta: Optional[MeetingDelta] = None
         try:
-            response = self.llm.invoke(prompt)
-            content = response.content if hasattr(response, "content") else str(response)
-            parsed = json.loads(content)
-            for item in parsed:
-                actions.append(
-                    NotificationAction(
-                        action_type=item.get("action_type", "notify"),
-                        target_user=item.get("target_user", user_id),
-                        message=item.get("message", ""),
-                        severity=item.get("severity", "info"),
-                        tags=item.get("tags", []),
-                    )
-                )
+            meeting_delta = self.memory_service.generate_delta_with_llm(
+                topic_id=topic_id, transcript=transcript, meeting_id=f"assets-{date_str}"
+            )
         except Exception:
-            # fallback: simple notify with list of asset names
+            meeting_delta = None
+
+        # 2) Action generation based on current memory + recent context + extra_context transcript
+        topic = self.memory_service.get_topic(topic_id)
+        delta_for_actions = meeting_delta or MeetingDelta(
+            meeting_id=f"assets-{date_str}", summary="assets batch", notes=[]
+        )
+        actions = self._llm_actions(
+            topic_id, topic, delta_for_actions, extra_context=transcript
+        )
+        if not actions:
             titles = ", ".join([a["name"] for a in assets])
             actions.append(
                 NotificationAction(
@@ -217,4 +225,12 @@ class TaskOrchestrator:
                     tags=["fallback"],
                 )
             )
+
+        # 3) Ingest best-effort (async-ish)
+        try:
+            if meeting_delta:
+                self.memory_service.ingest_meeting_delta(topic_id, meeting_delta)
+        except Exception:
+            pass
+
         return ProcessResult(topic=topic, actions=actions)

@@ -50,6 +50,10 @@ class IntegrationService:
         self.get_topic(topic_id)
         return self.store.list_context_range(topic_id, start_date, end_date)
 
+    def list_context_recent(self, topic_id: str, limit: int = 30) -> List[ContextEntry]:
+        self.get_topic(topic_id)
+        return self.store.list_context_recent(topic_id, limit)
+
     def reset(self) -> None:
         self.store.reset()
 
