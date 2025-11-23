@@ -50,6 +50,22 @@ def load_assets_by_date(date_str: str) -> List[Dict[str, str]]:
     return files
 
 
+def load_assets_between(start_date: str, end_date: str) -> List[Dict[str, str]]:
+    """Return assets where start_date <= date <= end_date."""
+    files: List[Dict[str, str]] = []
+    if not ASSETS_DIR.exists():
+        return files
+    for path in ASSETS_DIR.glob("*.md"):
+        parsed = parse_date_from_name(path.name)
+        if not parsed:
+            continue
+        if start_date <= parsed <= end_date:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            files.append({"name": path.name, "date": parsed, "content": content})
+    files.sort(key=lambda x: x["name"])
+    return files
+
+
 def load_members_file() -> List[str]:
     """Read member emails from members.md if present."""
     members_path = ASSETS_DIR / "members.md"

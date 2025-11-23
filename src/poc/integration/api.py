@@ -76,9 +76,13 @@ def reset_integration():
 
 
 @router.get("/assets")
-def assets(date: str):
+def assets(date: str, start_date: str | None = None):
     """Return asset files up to given date (YYYY-MM-DD) without persisting."""
     try:
+        if start_date:
+            from src.poc.assets_loader import load_assets_between
+
+            return load_assets_between(start_date, date)
         from src.poc.assets_loader import load_assets_upto
 
         return load_assets_upto(date)
@@ -90,10 +94,11 @@ def assets(date: str):
 def import_assets_context(
     topic_id: str,
     date: str,
+    start_date: str | None = None,
     author: str = "system",
 ):
     try:
-        return service.import_context_from_assets(topic_id, date_str=date, author=author)
+        return service.import_context_from_assets(topic_id, date_str=date, start_date=start_date, author=author)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:

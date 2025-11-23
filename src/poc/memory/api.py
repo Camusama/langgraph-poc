@@ -7,9 +7,12 @@ from pydantic import BaseModel, Field
 
 from .models import MeetingDelta, TopicMember, TopicState
 from .service import MemoryService
+from src.poc.integration.service import IntegrationService
+from datetime import datetime
 
 router = APIRouter(prefix="/api/poc/memory", tags=["poc-memory"])
 memory_service = MemoryService()
+integration_service = IntegrationService()
 
 
 class TopicCreatePayload(BaseModel):
@@ -80,3 +83,35 @@ def personal_view(topic_id: str, user_id: str):
 def reset_memory():
     memory_service.reset()
     return {"status": "ok"}
+
+
+@router.get("/topics")
+def list_topics():
+    return memory_service.list_topics()
+
+
+@router.post("/topics/{topic_id}/import_context_range", response_model=TopicState)
+def import_context_range(topic_id: str, start_date: str, end_date: str):
+    """Load contexts from integration Mongo between start_date and end_date and ingest as notes."""
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"日期格式错误: {exc}")
+    try:
+        entries = integration_service.list_context_range(topic_id, start_dt, end_dt)
+        return memory_service.ingest_context_entries(topic_id, entries)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/topics/{topic_id}/memory_entries")
+def list_memory_entries(topic_id: str, start_date: str = None, end_date: str = None, limit: int = 200):
+    try:
+        return memory_service.list_memory_entries(topic_id, start=start_date, end=end_date, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

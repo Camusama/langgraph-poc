@@ -9,6 +9,10 @@
     button { margin-right: 8px; margin-top: 8px; }
     pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow: auto; }
     .section { margin-bottom: 16px; }
+    .tabs { margin-top: 8px; }
+    .tab-btn { padding: 6px 10px; border: 1px solid #ccc; background: #fafafa; cursor: pointer; }
+    .tab-btn.active { background: #e7f0ff; border-color: #7da7ff; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
@@ -20,6 +24,9 @@
     <input id="baseUrl" value="http://localhost:8000" size="36" />
     <label style="margin-left:12px;">当前用户：</label>
     <input id="currentUser" value="marquez.yang@zoom.us" size="28" />
+    <label style="margin-left:12px;">当前 Topic：</label>
+    <select id="topicSelect" onchange="onTopicChange()"></select>
+    <span id="topicInfo" style="margin-left:8px;font-size:12px;color:#555;"></span>
     <button onclick="resetAll()">清空所有数据</button>
     <button onclick="runAll()">一键执行全部步骤</button>
   </div>
@@ -45,7 +52,9 @@
   <div class="section" style="border-top:1px solid #ddd; padding-top:10px;">
     <h3>3) 写入上下文（按日期导入 assets，自动触发记忆层 ingest_raw）</h3>
     <div>
-      <label>日期（YYYY-MM-DD）：</label>
+      <label>起始日期：</label>
+      <input id="contextStartDate" value="2025-01-05" size="12" />
+      <label>结束日期：</label>
       <input id="contextDate" value="2025-01-07" size="12" />
       <button onclick="importContextByDate()">POST 导入上下文</button>
       <button onclick="getContext()">GET 查看上下文</button>
@@ -57,6 +66,7 @@
     </div>
     <div style="margin-top:6px;">
       <button onclick="personalView()">GET 记忆层个人视图（当前用户）</button>
+      <button onclick="getMemoryEntries()">GET 记忆层所有记忆</button>
     </div>
   </div>
 
@@ -73,11 +83,18 @@
   </div>
 
   <h3>输出</h3>
-  <pre id="log"></pre>
+  <div class="tabs">
+    <button id="tab-latest" class="tab-btn active" onclick="switchTab('latest')">最新</button>
+    <button id="tab-all" class="tab-btn" onclick="switchTab('all')">全部</button>
+  </div>
+  <pre id="log-latest"></pre>
+  <pre id="log-all" class="hidden"></pre>
 
   <script>
     let integrationTopicId = null;
     let memoryTopicId = null;
+    let integrationTopicsCache = [];
+    let memoryTopicsCache = [];
 
     const sampleDelta = {
       meeting_id: "kickoff-001",
@@ -91,10 +108,118 @@
       notes: [{ text: "需要下周再同步一次" }]
     };
 
+    function switchTab(which) {
+      const latest = document.getElementById("log-latest");
+      const all = document.getElementById("log-all");
+      document.getElementById("tab-latest").classList.remove("active");
+      document.getElementById("tab-all").classList.remove("active");
+      if (which === "latest") {
+        latest.classList.remove("hidden");
+        all.classList.add("hidden");
+        document.getElementById("tab-latest").classList.add("active");
+      } else {
+        latest.classList.add("hidden");
+        all.classList.remove("hidden");
+        document.getElementById("tab-all").classList.add("active");
+      }
+    }
+
     function log(line) {
-      const el = document.getElementById("log");
-      el.textContent += line + "\n";
-      el.scrollTop = el.scrollHeight;
+      const latest = document.getElementById("log-latest");
+      const all = document.getElementById("log-all");
+      latest.textContent = line;
+      all.textContent += line + "\n";
+      all.scrollTop = all.scrollHeight;
+    }
+
+    async function refreshTopicIds() {
+      try {
+        const integ = await api("/api/poc/integration/topics");
+        if (integ && integ.length > 0) {
+          integrationTopicsCache = integ;
+          integrationTopicId = integ[0].topic_id;
+        }
+      } catch (e) {}
+      try {
+        const memTopics = await api("/api/poc/memory/topics");
+        if (memTopics && memTopics.length > 0) {
+          memoryTopicsCache = memTopics;
+          memoryTopicId = memTopics[0].topic_id;
+        }
+      } catch (e) {}
+      renderTopicSelect();
+    }
+
+    async function initTopicsFromServer() {
+      await refreshTopicIds();
+    }
+
+    function renderTopicSelect() {
+      const sel = document.getElementById("topicSelect");
+      sel.innerHTML = "";
+      if (!integrationTopicsCache || integrationTopicsCache.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.text = "未创建";
+        sel.appendChild(opt);
+        renderTopicInfo();
+        return;
+      }
+      integrationTopicsCache.forEach((t, idx) => {
+        const opt = document.createElement("option");
+        opt.value = t.topic_id;
+        opt.text = `${idx + 1}: ${t.title} (${t.topic_id})`;
+        if (t.topic_id === integrationTopicId) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      renderTopicInfo();
+    }
+
+    function onTopicChange() {
+      const sel = document.getElementById("topicSelect");
+      integrationTopicId = sel.value || integrationTopicId;
+      if (integrationTopicId) {
+        const match = memoryTopicsCache.find((m) => m.topic_id === integrationTopicId);
+        if (match) {
+          memoryTopicId = match.topic_id;
+        }
+      }
+      renderTopicInfo();
+    }
+
+    function renderTopicInfo() {
+      const info = document.getElementById("topicInfo");
+      info.textContent = `integration=${integrationTopicId || "-"}, memory=${memoryTopicId || "-"}`;
+    }
+
+    async function ensureTopicsReady() {
+      if (integrationTopicId && memoryTopicId) return;
+      await refreshTopicIds();
+      if (!integrationTopicId) throw new Error("请先创建集成层主题");
+      if (!memoryTopicId) {
+        const memTopics = await api("/api/poc/memory/topics").catch(() => []);
+        if (memTopics && memTopics.length > 0) {
+          memoryTopicId = memTopics[0].topic_id;
+          renderTopicInfo();
+          return;
+        }
+        log("自动创建记忆层主题（同步集成层）...");
+        const integ = integrationTopicsCache;
+        const title = integ[0]?.title || "AI 工作圈 POC";
+        const memberEmails = (await api("/api/poc/integration/members/from_file")).members;
+        const memberObjs = memberEmails.map(email => ({
+          user_id: email,
+          display_name: email.split("@")[0],
+          role: "member",
+          responsibilities: []
+        }));
+        const mem = await api("/api/poc/memory/topics", {
+          method: "POST",
+          body: JSON.stringify({ topic_id: integrationTopicId, title, goal: "POC", members: memberObjs })
+        });
+        memoryTopicId = mem.topic_id;
+        renderTopicInfo();
+      }
     }
 
     async function api(path, options = {}) {
@@ -119,6 +244,9 @@
       await api("/api/poc/memory/reset", { method: "POST" });
       integrationTopicId = null;
       memoryTopicId = null;
+      integrationTopicsCache = [];
+      memoryTopicsCache = [];
+      renderTopicSelect();
       log("重置完成");
     }
 
@@ -148,6 +276,7 @@
       });
       memoryTopicId = mem.topic_id;
       log(`记忆层 topic_id = ${memoryTopicId}`);
+      await refreshTopicIds();
     }
 
     async function getIntegrationTopics() {
@@ -156,7 +285,7 @@
     }
 
     async function addIntegrationMembers() {
-      if (!integrationTopicId) throw new Error("先创建主题");
+      await ensureTopicsReady();
       log("读取 assets/members.md...");
       const members = (await api("/api/poc/integration/members/from_file")).members;
       for (const email of members) {
@@ -170,22 +299,22 @@
     }
 
     async function getMembers() {
-      if (!integrationTopicId) throw new Error("先创建主题");
+      await ensureTopicsReady();
       const data = await api(`/api/poc/integration/topics/${integrationTopicId}/members`);
       log("成员列表: " + JSON.stringify(data, null, 2));
     }
 
     async function importContextByDate() {
-      if (!integrationTopicId) throw new Error("先创建主题");
+      await ensureTopicsReady();
+      const startDate = document.getElementById("contextStartDate").value || document.getElementById("contextDate").value;
       const date = document.getElementById("contextDate").value;
       const author = document.getElementById("currentUser").value || "system";
-      log(`导入资产至 ${date} 并写入上下文...`);
-      const created = await api(`/api/poc/integration/topics/${integrationTopicId}/context/import_assets?date=${date}&author=${encodeURIComponent(author)}`, {
+      log(`导入资产 ${startDate} - ${date} 并写入上下文...`);
+      const created = await api(`/api/poc/integration/topics/${integrationTopicId}/context/import_assets?date=${date}&start_date=${startDate}&author=${encodeURIComponent(author)}`, {
         method: "POST"
       });
       log(`已写入 ${created.length} 条上下文`);
-      // 自动触发 ingest_raw：聚合资产文本作为 transcript
-      const assets = await api(`/api/poc/integration/assets?date=${date}`);
+      const assets = await api(`/api/poc/integration/assets?date=${date}&start_date=${startDate}`);
       const transcript = assets.map(a => `[${a.name}] ${a.content}`).join("\n\n");
       if (transcript && memoryTopicId) {
         log("触发记忆层 ingest_raw（基于导入上下文）...");
@@ -193,17 +322,21 @@
           method: "POST",
           body: JSON.stringify({ meeting_id: `bulk-${date}`, transcript })
         });
+        log("触发记忆层 import_context_range（基于 Mongo 上下文新增）...");
+        await api(`/api/poc/memory/topics/${memoryTopicId}/import_context_range?start_date=${startDate}&end_date=${date}`, {
+          method: "POST"
+        });
       }
     }
 
     async function getContext() {
-      if (!integrationTopicId) throw new Error("先创建主题");
+      await ensureTopicsReady();
       const data = await api(`/api/poc/integration/topics/${integrationTopicId}/context`);
       log("上下文列表: " + JSON.stringify(data, null, 2));
     }
 
     async function ingestRaw() {
-      if (!memoryTopicId) throw new Error("先创建主题");
+      await ensureTopicsReady();
       const transcript = document.getElementById("manualTranscript").value || "Alice: 我们要改前端接口，最小可用方案先上线。Bob: 需要后端 schema，可能会晚几天。";
       log("记忆层 ingest_raw (LLM 抽取会议原文)...");
       await api(`/api/poc/memory/topics/${memoryTopicId}/ingest_raw`, {
@@ -217,15 +350,24 @@
     }
 
     async function personalView() {
-      if (!memoryTopicId) throw new Error("先创建主题");
+      await ensureTopicsReady();
       const user = document.getElementById("currentUser").value || "marquez.yang@zoom.us";
       log(`获取个人视图 (${user})...`);
       const data = await api(`/api/poc/memory/topics/${memoryTopicId}/view/${encodeURIComponent(user)}`);
       log("个人视图: " + JSON.stringify(data, null, 2));
     }
 
+    async function getMemoryEntries() {
+      await ensureTopicsReady();
+      const start = document.getElementById("contextStartDate").value;
+      const end = document.getElementById("contextDate").value;
+      log(`获取记忆层存储 (topic=${memoryTopicId}, ${start} - ${end})...`);
+      const data = await api(`/api/poc/memory/topics/${memoryTopicId}/memory_entries?start_date=${start}&end_date=${end}`);
+      log("记忆层存储: " + JSON.stringify(data, null, 2));
+    }
+
     async function processTasks() {
-      if (!memoryTopicId) throw new Error("先创建主题");
+      await ensureTopicsReady();
       log("任务层生成动作 (示例 delta)...");
       const data = await api(`/api/poc/task/topics/${memoryTopicId}/process`, {
         method: "POST",
@@ -235,7 +377,7 @@
     }
 
     async function processTasksByDate() {
-      if (!memoryTopicId) throw new Error("先创建主题");
+      await ensureTopicsReady();
       const date = document.getElementById("taskDate").value;
       const user = document.getElementById("currentUser").value || "marquez.yang@zoom.us";
       log(`按日期生成动作 (${date}, user=${user})...`);
@@ -244,8 +386,10 @@
     }
 
     async function runAll() {
-      document.getElementById("log").textContent = "";
+      document.getElementById("log-latest").textContent = "";
+      document.getElementById("log-all").textContent = "";
       try {
+        await initTopicsFromServer();
         await resetAll();
         await createCombinedTopic();
         await addIntegrationMembers();
@@ -257,6 +401,9 @@
         log("❌ 出错: " + e.message);
       }
     }
+
+    // 尝试加载已有主题，避免刷新后全部按钮报错
+    initTopicsFromServer();
   </script>
 </body>
 </html>

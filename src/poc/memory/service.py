@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import List, Optional
 from uuid import uuid4
 import json
+from datetime import datetime
 
 from .models import (
     ContextDelta,
@@ -14,17 +15,25 @@ from .models import (
     TaskDelta,
     TopicMember,
     TopicState,
+    utc_now,
 )
 from .store import MemoryStore
+from .mongo_store import MemoryMongoStore
 from src.agents.llm import get_llm_by_type
 
 
 class MemoryService:
     """Orchestrates topic memory creation and updates."""
 
-    def __init__(self, store: Optional[MemoryStore] = None, llm=None) -> None:
+    def __init__(
+        self,
+        store: Optional[MemoryStore] = None,
+        llm=None,
+        mongo_store: Optional[MemoryMongoStore] = None,
+    ) -> None:
         self.store = store or MemoryStore()
         self.llm = llm or get_llm_by_type("basic")
+        self.mongo_store = mongo_store or MemoryMongoStore()
 
     def create_topic(
         self,
@@ -69,6 +78,9 @@ class MemoryService:
 
         topic.context.extend(normalized)
         topic.context.sort(key=lambda item: item.created_at)
+        # persist
+        if self.mongo_store:
+            self.mongo_store.save_items(topic_id, normalized)
         return self.store.upsert_topic(topic)
 
     def get_topic(self, topic_id: str) -> TopicState:
@@ -80,6 +92,8 @@ class MemoryService:
     def reset(self) -> None:
         """Clear in-memory topics."""
         self.store.clear()
+        if self.mongo_store:
+            self.mongo_store.clear()
 
     def list_topics(self) -> List[TopicState]:
         return self.store.list_topics()
@@ -133,25 +147,12 @@ class MemoryService:
         ]
         recent_notes = "\n".join(topic.recent_notes[:5])
         prompt = f"""
-你是项目记忆提取助手。根据会议内容提炼结构化增量，输出 JSON，字段：facts, decisions, risks, tasks, notes。
-- facts/decisions/risks/notes: 数组，元素形如 {{"text": "...", "actors": ["user"], "tags": ["..."]}}
-- tasks: 数组，元素形如 {{"title": "...", "owner": "user_id", "due": "YYYY-MM-DD", "notes": "...", "tags": ["..."], "related_actors": ["user_id"]}}
-要求：
-- 只填有用内容，没提到就留空数组
-- 文本精简，不要添加额外解释
-
-项目信息：
-- topic: {topic.title}
-- goal: {topic.goal or "未提供"}
-- members:
-{chr(10).join(member_lines) or '无'}
-- 最近摘要:
-{recent_notes or '无'}
-
+将会议内容压缩为 JSON，字段：facts, decisions, risks, tasks, notes。
+- facts/decisions/risks/notes: 数组，元素 {{"text":"…","actors":["user_id"],"tags":["…"]}}
+- tasks: 数组，元素 {{"title":"…","owner":"user_id","due":"YYYY-MM-DD","notes":"…","tags":["…"],"related_actors":["user_id"]}}
+只输出 JSON，无解释，无代码块。内容要短。
 会议内容：
 {transcript}
-
-请直接输出 JSON，不要包裹代码块。
 """
         try:
             response = self.llm.invoke(prompt)
@@ -161,6 +162,50 @@ class MemoryService:
             return MeetingDelta(**data)
         except Exception as exc:
             raise ValueError(f"LLM 生成 MeetingDelta 失败: {exc}")
+
+    def ingest_context_entries(self, topic_id: str, entries) -> TopicState:
+        """Ingest existing context entries (e.g., from Mongo) as notes."""
+        topic = self.get_topic(topic_id)
+        normalized: List[ContextItem] = []
+        for entry in entries:
+            normalized.append(
+                ContextItem(
+                    type="note",
+                    text=entry.text,
+                    actors=[entry.author] if entry.author else [],
+                    tags=entry.tags,
+                    source=entry.source,
+                    created_at=getattr(entry, "created_at", utc_now()),
+                )
+            )
+        topic.context.extend(normalized)
+        topic.context.sort(key=lambda item: item.created_at)
+        if self.mongo_store:
+            self.mongo_store.save_items(topic_id, normalized)
+        return self.store.upsert_topic(topic)
+
+    def list_memory_entries(
+        self, topic_id: str, start: Optional[str] = None, end: Optional[str] = None, limit: int = 200
+    ) -> List[ContextItem]:
+        """List persisted memory entries (Mongo) or fallback to in-memory context."""
+        topic = self.get_topic(topic_id)
+        if self.mongo_store:
+            try:
+                start_dt = datetime.fromisoformat(start) if start else datetime.min
+                end_dt = datetime.fromisoformat(end) if end else datetime.max
+                # if only date provided (YYYY-MM-DD), end_dt should include the whole day
+                if end and len(end) == 10:
+                    end_dt = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+                if start and len(start) == 10:
+                    start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                results = self.mongo_store.list_between(topic_id, start_dt, end_dt)
+                if results:
+                    return results[:limit]
+            except Exception:
+                pass
+            return self.mongo_store.list_recent(topic_id, limit=limit)
+
+        return topic.context[:limit]
 
     def _normalize_group(
         self, item_type: str, deltas: List[ContextDelta], source: Optional[str]

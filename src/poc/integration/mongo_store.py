@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 from uuid import uuid4
+from datetime import datetime
 
 from pymongo import MongoClient
 from pymongo.collection import Collection
@@ -78,12 +79,24 @@ class IntegrationStore:
             "text": payload.text,
             "tags": payload.tags,
             "source": payload.source,
+            "created_at": datetime.utcnow(),
         }
         self.contexts.insert_one(doc)
         return ContextEntry(**doc)
 
     def list_context(self, topic_id: str, limit: int = 50) -> List[ContextEntry]:
         cursor = self.contexts.find({"topic_id": topic_id}).sort("created_at", -1).limit(limit)
+        return [ContextEntry(**doc) for doc in cursor]
+
+    def list_context_range(
+        self, topic_id: str, start_date: datetime, end_date: datetime
+    ) -> List[ContextEntry]:
+        cursor = self.contexts.find(
+            {
+                "topic_id": topic_id,
+                "created_at": {"$gte": start_date, "$lte": end_date},
+            }
+        ).sort("created_at", 1)
         return [ContextEntry(**doc) for doc in cursor]
 
     def reset(self) -> None:

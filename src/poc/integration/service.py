@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from typing import List, Optional
+from datetime import datetime
 
 from .models import ContextCreate, ContextEntry, Member, MemberCreate, Topic, TopicCreate
 from .mongo_store import IntegrationStore
-from src.poc.assets_loader import load_assets_upto, load_members_file
+from src.poc.assets_loader import load_assets_upto, load_members_file, load_assets_between
 
 
 class IntegrationService:
@@ -43,15 +44,29 @@ class IntegrationService:
         self.get_topic(topic_id)
         return self.store.list_context(topic_id, limit=limit)
 
+    def list_context_range(
+        self, topic_id: str, start_date: datetime, end_date: datetime
+    ) -> List[ContextEntry]:
+        self.get_topic(topic_id)
+        return self.store.list_context_range(topic_id, start_date, end_date)
+
     def reset(self) -> None:
         self.store.reset()
 
     def import_context_from_assets(
-        self, topic_id: str, date_str: str, author: str = "system", source_prefix: str = "asset"
+        self,
+        topic_id: str,
+        date_str: str,
+        start_date: Optional[str] = None,
+        author: str = "system",
+        source_prefix: str = "asset",
     ) -> List[ContextEntry]:
         """Bulk import asset files up to date_str."""
         self.get_topic(topic_id)
-        files = load_assets_upto(date_str)
+        if start_date:
+            files = load_assets_between(start_date, date_str)
+        else:
+            files = load_assets_upto(date_str)
         created: List[ContextEntry] = []
         for item in files:
             payload = ContextCreate(
